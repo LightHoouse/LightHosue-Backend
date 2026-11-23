@@ -1,0 +1,9 @@
+import { z } from "zod";
+
+export const locatorSchema = z.object({ kind: z.enum(["automationId","testId","role-name","ancestors-text","css","xpath","visual"]), value: z.string().optional(), role: z.string().optional(), name: z.string().optional(), chain: z.array(z.string()).optional(), cropRef: z.string().optional(), relativeBox: z.array(z.number()).length(4).optional(), rank: z.number().int().nonnegative() });
+export const commandSchema = z.object({ schemaVersion: z.literal(1), cmdId: z.string().min(1), sessionId: z.string().min(1), studentId: z.string().min(1), snapshotId: z.string().min(1), issuedAt: z.number(), ttlMs: z.number().int().positive().max(300000), action: z.enum(["pointTo","scrollTo","highlight","say"]), mode: z.literal("guide"), stepRef: z.string().nullable(), prerequisiteStepRefs: z.array(z.string()), params: z.record(z.unknown()), locators: z.array(locatorSchema), window: z.object({process:z.string(), titlePattern:z.string(), urlPattern:z.string().nullable()}), scrollContainer:z.record(z.unknown()).nullable(), verify:z.record(z.unknown()), onFail:z.record(z.unknown()), say:z.string(), detail:z.string().nullable() });
+export type Command = z.infer<typeof commandSchema>;
+export type Locator = z.infer<typeof locatorSchema>;
+export type AckStatus = "shown" | "dismissed" | "failed" | "expired";
+export type Ack = { schemaVersion:1; cmdId:string; studentId:string; ts:number; ok:boolean; status:AckStatus; verified:boolean; error:{code:string;message:string}|null; snapshotRef:string|null; latencyMs:number };
+export type Snapshot = { schemaVersion:1; snapshotId:string; studentId:string; sessionId:string; ts:number; question:string; activeWindow:Record<string, unknown>; visibleElements:unknown[]; focusedElement:unknown; recentActions:unknown[]; openWindows:unknown[]; screenshotRef:string|null; env:Record<string, unknown>; privacy:{redacted:boolean;redactions:string[];retentionDays:number} };
