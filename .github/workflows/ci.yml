@@ -10,6 +10,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -52,6 +56,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Upload runtime secrets to VPS
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_TARGET: ${{ vars.DEPLOY_SSH_TARGET }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MQTT_URL: ${{ secrets.MQTT_URL }}
+          MQTT_USERNAME: ${{ secrets.MQTT_USERNAME }}
+          MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
+          MQTT_CA_CERT: ${{ secrets.MQTT_CA_CERT }}
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          LAB_AI_URL: ${{ vars.LAB_AI_URL }}
+        run: |
+          umask 077
+          export DEPLOY_KEY_FILE="$RUNNER_TEMP/deploy_key"
+          export DEPLOY_HOSTS_FILE="$RUNNER_TEMP/deploy_hosts"
+          trap 'rm -f "$DEPLOY_KEY_FILE" "$DEPLOY_HOSTS_FILE"' EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$DEPLOY_KEY_FILE"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$DEPLOY_HOSTS_FILE"
+          node scripts/upload-runtime.mjs
       - run: node scripts/deploy.mjs
         env:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}

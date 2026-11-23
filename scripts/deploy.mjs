@@ -1,10 +1,11 @@
 const { COOLIFY_URL:base, COOLIFY_TOKEN:token, COOLIFY_APP_UUID:uuid, HEALTH_URL:health } = process.env;
 if (!base || !token || !uuid || !health) throw new Error('Deployment configuration missing');
-async function api(route, body) {
- const response = await fetch(`${base}/api/v1/${route}`, {method:body ? 'POST' : 'GET', headers:{authorization:`Bearer ${token}`,'content-type':'application/json'}, ...(body ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.timeout(30000)});
+async function api(route, body, method = body ? 'POST' : 'GET') {
+ const response = await fetch(`${base}/api/v1/${route}`, {method, headers:{authorization:`Bearer ${token}`,'content-type':'application/json'}, ...(body ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.timeout(30000)});
  if (!response.ok) throw new Error(`Coolify request failed: ${response.status}`);
  return response.json();
 }
+if (process.env.GITHUB_SHA) await api(`applications/${uuid}`, {git_commit_sha:process.env.GITHUB_SHA}, 'PATCH');
 const created = await api('deploy', {uuid});
 const deployment = created.deployments?.[0]?.deployment_uuid;
 if (!deployment) throw new Error('No deployment ID');

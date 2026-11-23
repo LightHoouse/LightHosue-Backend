@@ -1,4 +1,4 @@
-﻿# Lighthouse Backend 🔦
+# Lighthouse Backend 🔦
 
 A lab support API that connects recorded steps, student questions, and desktop guidance.
 
@@ -71,9 +71,9 @@ Tests cover bearer authentication, typed-text redaction, MQTT topic validation, 
 
 ## Deployment
 
-Coolify builds the Dockerfile from `master`, listens on port 3000, and checks `/health`. The current service is limited to 512 MiB and one CPU. AI is a separate service and is not deployed with this repository.
+Coolify builds the Dockerfile at the commit selected by CI, listens on port 3000, and checks `/health`. The current service is limited to 512 MiB and one CPU. AI is a separate service and is not deployed with this repository.
 
-GitHub Actions runs tests, publishes a commit-tagged image to GHCR, then triggers Coolify and checks the public endpoint. Set the repository secret `COOLIFY_TOKEN` and variables `COOLIFY_URL`, `COOLIFY_APP_UUID`, and `HEALTH_URL` to enable deployment. Application credentials are configured in Coolify as runtime environment variables, not build arguments.
+GitHub Actions runs tests, publishes a commit-tagged image to GHCR, then triggers Coolify and checks the public endpoint. Set the repository secret `COOLIFY_TOKEN` and variables `COOLIFY_URL`, `COOLIFY_APP_UUID`, and `HEALTH_URL` to enable deployment. Application credentials are managed only in GitHub Actions secrets: `MONGODB_URI`, `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_CA_CERT`, and `API_TOKEN`. `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS` provide restricted, host-verified configuration delivery; `DEPLOY_SSH_TARGET` is a repository variable. Optional `LAB_AI_URL` is also a variable. Actions uploads a private runtime JSON file to `/opt/lighthouse/runtime/runtime.json` before deploying the tested commit. Coolify mounts that directory at `/run/lighthouse`; no application credential values are stored in its environment settings or in the Docker image. The SSH key can only invoke `scripts/receive-runtime.py`, not an interactive shell.
 
 Windows installers are published by [LightHouse-App](https://github.com/LightHoouse/LightHouse-App/releases); this repository deploys the API service.
 
