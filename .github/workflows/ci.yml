@@ -39,3 +39,22 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/lighthoouse/lighthosue-backend:${{ github.sha }}
+
+  deploy:
+    needs: container
+    if: github.ref == 'refs/heads/master' && vars.COOLIFY_APP_UUID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/deploy.mjs
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_URL: ${{ vars.COOLIFY_URL }}
+          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}

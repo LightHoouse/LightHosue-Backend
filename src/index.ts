@@ -12,7 +12,7 @@ const mongoUri = process.env.MONGODB_URI;
 const mongo = mongoUri ? new MongoClient(mongoUri, { serverSelectionTimeoutMS: 5000 }) : undefined;
 let db: Db | undefined;
 const mqttUrl = process.env.MQTT_URL;
-const mqttClient = mqttUrl ? mqtt.connect(mqttUrl, { username: process.env.MQTT_USERNAME, password: process.env.MQTT_PASSWORD, rejectUnauthorized: true, clientId: `lighthouse-backend-${randomUUID()}` }) : undefined;
+const mqttClient = mqttUrl ? mqtt.connect(mqttUrl, { username: process.env.MQTT_USERNAME, password: process.env.MQTT_PASSWORD, rejectUnauthorized: true, ca: process.env.MQTT_CA_CERT || undefined, clientId: `lighthouse-backend-${randomUUID()}` }) : undefined;
 
 async function jsonBody(req: IncomingMessage): Promise<unknown> {
   let raw = "";
@@ -56,3 +56,4 @@ async function main() {
   server.listen(port, () => console.log(JSON.stringify({ level:"info", message:"http_started", port })));
 }
 main().catch(error => { console.error(error); process.exit(1); });
+
