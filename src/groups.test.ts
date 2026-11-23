@@ -53,6 +53,13 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   assert.equal((await call('/v1/guide',{recordingId:r.data.recordingId,question:'Unrelated'},s.data.token)).status,404);
   await call(`/v1/recordings/${r.data.recordingId}/stop`,{},a.data.token);
   assert.equal((await call(route,{...step,eventId:randomUUID()},a.data.token)).status,409);
+  assert.equal((await call(route,{...step,enrichment:false},a.data.token)).status,200);
+  const state={windowTitle:'Fixture',visibleNames:[],elements:[],observedAt:Date.now()};
+  const capture={surface:'uia',preState:null,postState:state,details:{className:'Button',ancestors:[],supportedPatterns:[],enabled:true,bboxNorm:[0,0,1,1],appVersion:''},env:{os:'Windows',dpi:null,resolution:[1920,1080],monitorCount:1,locale:'en-US'}};
+  assert.equal((await call(route,{...step,enrichment:true,capture},a.data.token)).status,200);
+  const stored=await call(route,undefined,a.data.token);assert.equal(stored.data.steps.length,1);assert.deepEqual(stored.data.steps[0].capture.postState,state);
+  assert.equal((await call(route,{...step,event:'type',enrichment:true,capture},a.data.token)).status,409);
+  assert.equal((await call(route,{...step,eventId:randomUUID(),enrichment:true,capture},a.data.token)).status,409);
   assert.equal((await call('/v1/group/close',{},s.data.token)).status,403);
   await call('/v1/group/close',{},a.data.token);
   assert.equal((await call('/v1/group',undefined,s.data.token)).status,410);

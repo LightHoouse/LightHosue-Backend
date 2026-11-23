@@ -2,13 +2,18 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from 'mongodb';
 import { z } from 'zod';
+import { recordContract } from './record-contract.js';
 import { readEvents } from './ndjson.js';
 
 const text = z.string().trim().min(1).max(120);
 const target = z.object({ automationId:z.string().max(300), name:z.string().max(300), controlType:z.string().max(80) }).strict();
+const observedElement=z.object({automationId:z.string().max(300),role:z.string().max(80),name:z.string().max(300),enabled:z.boolean(),selected:z.boolean().nullable(),checkedValue:z.boolean().nullable(),expanded:z.boolean().nullable()}).strict();
+const observedState=z.object({windowTitle:z.string().max(512),visibleNames:z.array(z.string().max(300)).max(100),elements:z.array(observedElement).max(100),observedAt:z.number().finite()}).strict();
+const captureSchema=z.object({surface:z.literal('uia'),preState:observedState.nullable(),postState:observedState.nullable(),details:z.object({className:z.string().max(300),ancestors:z.array(z.object({role:z.string().max(80),name:z.string().max(300)}).strict()).max(5),supportedPatterns:z.array(z.string().max(120)).max(50),enabled:z.boolean(),bboxNorm:z.array(z.number().finite()).length(4),appVersion:z.string().max(120)}).strict(),env:z.object({os:z.string().max(300),dpi:z.number().positive().nullable(),resolution:z.array(z.number().int()).length(2),monitorCount:z.number().int().positive(),locale:z.string().max(80)}).strict()}).strict();
 const stepSchema = z.object({
   eventId:z.string().uuid(), event:z.enum(['click','doubleClick','rightClick','scroll','type']),
   target, window:z.object({process:text,title:z.string().max(300)}).strict(),
+  capture:captureSchema.optional(), enrichment:z.boolean().default(false),
   timestamp:z.number().finite(), direction:z.enum(['up','down']).optional(),
 }).strict();
 const hash = (s:string) => createHash('sha256').update(s).digest('hex');
@@ -74,15 +79,24 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
       if(req.method==='POST' && match[2]==='stop') {owner();await recordings.updateOne({recordingId:match[1]},{$set:{status:'ready'}});send(200,{ok:true});return true;}
       if(req.method==='POST' && match[2]==='steps') {
-        owner();if(recording.status!=='recording') throw new Error('409:Rekaman sudah selesai.');
+        owner();
         const input=stepSchema.parse(await read());
         if(recording.process!=='*' && input.window.process!==recording.process) throw new Error('400:Jendela berbeda dari rekaman.');
         const existing=await steps.findOne({recordingId:match[1],eventId:input.eventId});
-        if(existing){send(200,{stepId:existing.stepId});return true;}
+        if(existing){
+          if(input.enrichment && input.capture?.postState){
+            if(existing.event!==input.event || JSON.stringify(existing.target)!==JSON.stringify(input.target) || existing.timestamp!==input.timestamp)throw new Error('409:Identitas langkah tidak cocok.');
+            await steps.updateOne({stepId:existing.stepId},{$set:{'capture.postState':input.capture.postState,'contract.context.postState':{...input.capture.postState,urlPattern:null,expectedElements:[]}}});
+          }
+          send(200,{stepId:existing.stepId});return true;
+        }
+        if(recording.status!=='recording' || input.enrichment)throw new Error('409:Rekaman selesai atau langkah awal belum diterima.');
         const next=await recordings.findOneAndUpdate({recordingId:match[1],status:'recording',$or:[{nextSeq:{$lt:2000}},{nextSeq:{$exists:false}}]},{$inc:{nextSeq:1}},{returnDocument:'after'});
         if(!next)throw new Error('409:Rekaman selesai atau batas 2000 langkah tercapai.');
         const step={...input,stepId:randomUUID(),recordingId:match[1],groupId:group.groupId,seq:next.nextSeq,typedText:null,typedTextSensitive:input.event==='type',expiresAt:group.expiresAt};
-        try{await steps.insertOne(step);}catch(error){const duplicate=await steps.findOne({recordingId:match[1],eventId:input.eventId});if(duplicate){send(200,{stepId:duplicate.stepId});return true;}throw error;}send(201,{stepId:step.stepId});return true;
+        const previous=await steps.findOne({recordingId:match[1],seq:next.nextSeq-1});
+        const document={...step,contract:recordContract(step,member.memberId,previous?.stepId||null)};
+        try{await steps.insertOne(document);if(previous)await steps.updateOne({stepId:previous.stepId},{$set:{'contract.nextStepId':step.stepId}});}catch(error){const duplicate=await steps.findOne({recordingId:match[1],eventId:input.eventId});if(duplicate){send(200,{stepId:duplicate.stepId});return true;}throw error;}send(201,{stepId:step.stepId});return true;
       }
       if(req.method==='GET' && match[2]==='steps') {send(200,{steps:await steps.find({recordingId:match[1],groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray()});return true;}
     }
@@ -126,7 +140,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       const command={cmdId:randomUUID(),source,explanation,mode:'guide',step:selected,say:`${verbs[selected.event]} ${selected.target.name || selected.target.automationId || selected.target.controlType}${selected.event==='scroll' ? ' '+(selected.direction==='up'?'ke atas':'ke bawah'):''}.`,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;
     }
     if(req.method==='POST' && url==='/v1/ack') {
-      const input=z.object({cmdId:z.string().uuid(),stepId:z.string().uuid(),resolved:z.boolean(),strategy:z.string().max(80).nullable()}).parse(await read());
+      const input=z.object({cmdId:z.string().uuid(),stepId:z.string().uuid(),resolved:z.boolean(),strategy:z.string().max(80).nullable(),interaction:z.literal('target-clicked').optional(),outcome:z.enum(['observed','not-observed','unverifiable']).optional()}).parse(await read());
       if(!await steps.findOne({stepId:input.stepId,groupId:group.groupId}))throw new Error('404:Langkah tidak ditemukan.');
       await db.collection('guideAcks').insertOne({...input,groupId:group.groupId,memberId:member.memberId,expiresAt:group.expiresAt,at:Date.now()});send(200,{ok:true});return true;
     }
