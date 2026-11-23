@@ -26,6 +26,11 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   assert.equal((await call(route,undefined,b.data.token)).status,404);
   assert.equal((await call('/v1/guide',{recordingId:r.data.recordingId},b.data.token)).status,404);
   const guide=await call('/v1/guide',{recordingId:r.data.recordingId,question:'Simpan'},s.data.token);assert.equal(guide.status,200);assert.equal(guide.data.step.target.automationId,'save');assert.equal(guide.data.total,1);
+  assert.equal((await call('/v1/guide',{question:'Simpan'},s.data.token)).status,200);
+  assert.equal((await call('/v1/group/settings',{askEnabled:false},s.data.token)).status,403);
+  await call('/v1/group/settings',{askEnabled:false},a.data.token);
+  assert.equal((await call('/v1/guide',{question:'Simpan'},s.data.token)).status,403);
+  await call('/v1/group/settings',{askEnabled:true},a.data.token);
   assert.equal((await call('/v1/guide',{recordingId:r.data.recordingId,question:'Unrelated'},s.data.token)).status,404);
   await call(`/v1/recordings/${r.data.recordingId}/stop`,{},a.data.token);
   assert.equal((await call(route,{...step,eventId:randomUUID()},a.data.token)).status,409);

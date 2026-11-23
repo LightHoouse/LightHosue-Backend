@@ -54,11 +54,13 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
     if(!group) throw new Error('410:Group sudah ditutup atau kedaluwarsa.');
     const owner=()=>{if(member.role!=='assistant') throw new Error('403:Hanya asisten yang dapat merekam.');};
     if(req.method==='GET' && url==='/v1/group') {
-      send(200,{group:{groupId:group.groupId,name:group.name,code:group.code},role:member.role,name:member.name,
+      send(200,{group:{groupId:group.groupId,name:group.name,code:group.code,askEnabled:group.askEnabled!==false},role:member.role,name:member.name,
         members:await members.find({groupId:group.groupId,expiresAt:{$gt:new Date()}},{projection:{_id:0,name:1,role:1,memberId:1}}).toArray(),
         recordings:await recordings.find({groupId:group.groupId},{projection:{_id:0}}).sort({createdAt:-1}).limit(50).toArray()}); return true;
     }
     if(req.method==='POST' && url==='/v1/group/close') {owner();await groups.updateOne({groupId:group.groupId},{$set:{active:false}});send(200,{ok:true});return true;}
+    if(req.method==='POST' && url==='/v1/group/settings') {owner();const input=z.object({askEnabled:z.boolean()}).parse(await read());await groups.updateOne({groupId:group.groupId},{$set:input});send(200,input);return true;}
+    if(req.method==='POST' && url==='/v1/leave') {await members.deleteOne({memberId:member.memberId});send(200,{ok:true});return true;}
     if(req.method==='POST' && url==='/v1/recordings') {
       owner();const input=z.object({name:text,process:text}).parse(await read());
       const recording={recordingId:randomUUID(),groupId:group.groupId,name:input.name,process:input.process,status:'recording',createdAt:Date.now(),expiresAt:group.expiresAt};
@@ -72,7 +74,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(req.method==='POST' && match[2]==='steps') {
         owner();if(recording.status!=='recording') throw new Error('409:Rekaman sudah selesai.');
         const input=stepSchema.parse(await read());
-        if(input.window.process!==recording.process) throw new Error('400:Jendela berbeda dari rekaman.');
+        if(recording.process!=='*' && input.window.process!==recording.process) throw new Error('400:Jendela berbeda dari rekaman.');
         const existing=await steps.findOne({recordingId:match[1],eventId:input.eventId});
         if(existing){send(200,{stepId:existing.stepId});return true;}
         const next=await recordings.findOneAndUpdate({recordingId:match[1],status:'recording',$or:[{nextSeq:{$lt:2000}},{nextSeq:{$exists:false}}]},{$inc:{nextSeq:1}},{returnDocument:'after'});
@@ -83,17 +85,18 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(req.method==='GET' && match[2]==='steps') {send(200,{steps:await steps.find({recordingId:match[1],groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray()});return true;}
     }
     if(req.method==='POST' && url==='/v1/guide') {
-      const input=z.object({recordingId:z.string().uuid(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([])}).parse(await read());
-      const recording=await recordings.findOne({recordingId:input.recordingId,groupId:group.groupId});
+      const input=z.object({recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
+      if(group.askEnabled===false && member.role==='student')throw new Error('403:Asisten sedang menonaktifkan bantuan untuk sesi ini.');
+      const recording=await recordings.findOne({...(input.recordingId?{recordingId:input.recordingId}:{nextSeq:{$gt:0}}),groupId:group.groupId},{sort:{createdAt:-1}});
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
-      const all=await steps.find({recordingId:input.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
+      const all=await steps.find({recordingId:recording.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
       if(!all.length)throw new Error('409:Belum ada langkah yang direkam.');
       let selected=all.find(s=>s.seq>input.afterSeq);
       let explanation='',source='recording';
       if(input.question.trim() && process.env.LAB_AI_URL) {
         const rateKey='ai:'+member.memberId,now=Date.now();const limit=attempts.get(rateKey)||{count:0,until:now+60000};if(limit.until<now){limit.count=0;limit.until=now+60000;}limit.count++;attempts.set(rateKey,limit);if(limit.count>12)throw new Error('429:Batas 12 pertanyaan AI per menit. Tunggu sebentar.');
         let response;
-        try{response=await fetch(`${process.env.LAB_AI_URL}/guide`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,visibleNames:input.visibleNames,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi atau gunakan Langkah berikutnya.');}
+        try{response=await fetch(`${process.env.LAB_AI_URL}/guide`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
         if(!response.ok)throw new Error('503:AI belum tersedia. Coba lagi atau gunakan Langkah berikutnya.');
         const result=await response.json() as {stepId?:string;explanation?:string};
         selected=all.find(s=>s.stepId===result.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah yang sesuai dalam rekaman ini.');
