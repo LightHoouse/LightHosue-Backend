@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 
-const keys = ['MONGODB_URI', 'MQTT_URL', 'MQTT_USERNAME', 'MQTT_PASSWORD', 'MQTT_CA_CERT', 'API_TOKEN', 'LAB_AI_URL'];
+const keys = ['MONGODB_URI', 'MQTT_URL', 'MQTT_USERNAME', 'MQTT_PASSWORD', 'MQTT_CA_CERT', 'API_TOKEN', 'LAB_AI_URL', 'LAB_AI_TOKEN'];
 const config = Object.fromEntries(keys.map(key => [key, process.env[key] || '']));
-for (const key of keys.filter(key => !['MQTT_CA_CERT', 'LAB_AI_URL'].includes(key))) {
+for (const key of keys.filter(key => !['MQTT_CA_CERT', 'LAB_AI_URL', 'LAB_AI_TOKEN'].includes(key))) {
   if (!config[key]) throw new Error(`Missing GitHub secret: ${key}`);
 }
 const result = spawnSync('ssh', ['-i', process.env.DEPLOY_KEY_FILE, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${process.env.DEPLOY_HOSTS_FILE}`, process.env.DEPLOY_SSH_TARGET, 'upload-runtime'], {

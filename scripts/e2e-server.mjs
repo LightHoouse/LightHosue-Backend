@@ -1,0 +1,12 @@
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { spawn } from 'node:child_process';
+import {MongoClient} from 'mongodb';
+import {randomUUID} from 'node:crypto';
+const mongo=process.env.TEST_MONGODB_URI?undefined:await MongoMemoryServer.create();
+const uri=new URL(process.env.TEST_MONGODB_URI || mongo.getUri());uri.pathname='/lighthouse_e2e_'+randomUUID().replaceAll('-','');
+const child=spawn(process.execPath,['dist/index.js'],{env:{...process.env,NODE_ENV:'test',MONGODB_URI:uri.href,MQTT_URL:'',API_TOKEN:'test-only-admin-token',PORT:process.env.PORT||'43129'},stdio:['ignore','inherit','inherit']});
+let stopped=false;
+const stop=async()=>{if(stopped)return;stopped=true;child.kill();const client=new MongoClient(uri.href);await client.connect();await client.db().dropDatabase();await client.close();await mongo?.stop();process.exit(0);};
+process.on('SIGINT',stop);process.on('SIGTERM',stop);
+process.stdin.on('data',stop);
+child.on('exit',stop);

@@ -68,6 +68,7 @@ jobs:
           MQTT_CA_CERT: ${{ secrets.MQTT_CA_CERT }}
           API_TOKEN: ${{ secrets.API_TOKEN }}
           LAB_AI_URL: ${{ vars.LAB_AI_URL }}
+          LAB_AI_TOKEN: ${{ secrets.LAB_AI_TOKEN }}
         run: |
           umask 077
           export DEPLOY_KEY_FILE="$RUNNER_TEMP/deploy_key"
