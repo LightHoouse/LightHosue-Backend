@@ -4,6 +4,8 @@ import mqtt from "mqtt";
 import { MongoClient, type Db } from "mongodb";
 import { commandSchema } from "./protocol/types.js";
 
+import { authorized, redact, topicId } from "./safety.js";
+
 const port = Number(process.env.PORT ?? 3000);
 const aiUrl = process.env.LAB_AI_URL ?? "http://127.0.0.1:8100";
 const mongoUri = process.env.MONGODB_URI;
@@ -18,12 +20,8 @@ async function jsonBody(req: IncomingMessage): Promise<unknown> {
   return JSON.parse(raw || "{}");
 }
 function respond(res: ServerResponse, status: number, body: unknown) { res.statusCode = status; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); }
-function redact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redact);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key.toLowerCase().includes("typedtext") ? key : key, key.toLowerCase().includes("typedtext") ? null : redact(child)]));
-}
-async function save(collection: string, value: Record<string, unknown>) { if (db) await db.collection(collection).insertOne({ ...value, _storedAt: new Date() }); }
+
+async function save(collection: string, value: Record<string, unknown>) { if (!db) throw new Error("storage_unavailable"); await db.collection(collection).insertOne({ ...value, _storedAt: new Date() }); }
 
 mqttClient?.on("connect", () => { console.log(JSON.stringify({ level:"info", message:"mqtt_connected" })); mqttClient.subscribe("lab/+/student/+/ack", { qos: 1 }); });
 mqttClient?.on("message", async (_topic, payload) => { try { await save("acks", JSON.parse(payload.toString())); } catch (error) { console.error(JSON.stringify({ level:"error", message:"ack_store_failed", error:String(error) })); } });
@@ -32,12 +30,14 @@ mqttClient?.on("error", error => console.error(JSON.stringify({ level:"error", m
 const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") { respond(res, 200, { ok:true, service:"lighthouse-backend", mqtt:Boolean(mqttClient?.connected), mongo:Boolean(db) }); return; }
-    if (req.method === "GET" && req.url === "/health/detailed") { const checks = { mongo: Boolean(db), mqtt: Boolean(mqttClient?.connected), ai: false }; try { checks.ai = (await fetch(`${aiUrl}/healthz`, { signal: AbortSignal.timeout(1500) })).ok; } catch {} respond(res, checks.ai ? 200 : 503, { status: Object.values(checks).every(Boolean) ? "ok" : "degraded", checks }); return; }
+    if (!authorized(req.headers.authorization, process.env.API_TOKEN)) { respond(res, 401, {error:"unauthorized"}); return; }
+    if (req.method === "GET" && req.url === "/health/detailed") { const checks = { mongo: Boolean(db), mqtt: Boolean(mqttClient?.connected), ai: false }; try { checks.ai = (await fetch(`${aiUrl}/healthz`, { signal: AbortSignal.timeout(1500) })).ok; } catch {} respond(res, checks.mongo && checks.mqtt ? 200 : 503, { status: Object.values(checks).every(Boolean) ? "ok" : "degraded", checks }); return; }
     if (req.method === "POST" && req.url === "/snapshots") { const snapshot = redact(await jsonBody(req)) as Record<string, unknown>; await save("snapshots", snapshot); respond(res, 201, { stored:true }); return; }
-    if (req.method === "POST" && req.url === "/steps") { const step = await jsonBody(req) as Record<string, unknown>; if (!step.stepId || !step.sessionId) { respond(res, 400, { error:"stepId_and_sessionId_required" }); return; } await save("steps", step); respond(res, 201, { stored:true }); return; }
-    if (req.method === "POST" && req.url === "/answer") { const snapshot = await jsonBody(req); const response = await fetch(`${aiUrl}/answer`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(snapshot), signal:AbortSignal.timeout(30000) }); respond(res, response.status, await response.json()); return; }
+    if (req.method === "POST" && req.url === "/steps") { const step = redact(await jsonBody(req)) as Record<string, unknown>; if (!step.stepId || !step.sessionId) { respond(res, 400, { error:"stepId_and_sessionId_required" }); return; } await save("steps", step); respond(res, 201, { stored:true }); return; }
+    if (req.method === "POST" && req.url === "/answer") { if (!process.env.LAB_AI_URL) { respond(res, 503, {error:"ai_not_configured"}); return; } const snapshot = await jsonBody(req); const response = await fetch(`${aiUrl}/answer`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(snapshot), signal:AbortSignal.timeout(30000) }); respond(res, response.status, await response.json()); return; }
     if (req.method === "POST" && req.url === "/commands") {
       const input = await jsonBody(req) as Record<string, unknown>;
+      if (!topicId(input.sessionId) || !topicId(input.studentId)) { respond(res,400,{error:"invalid_scope"}); return; }
       const command = commandSchema.parse({ ...input, cmdId: input.cmdId ?? randomUUID(), snapshotId: input.snapshotId ?? "snap_unknown", issuedAt: input.issuedAt ?? Date.now(), schemaVersion:1, mode:"guide", prerequisiteStepRefs: input.prerequisiteStepRefs ?? [], params: input.params ?? {}, locators: input.locators ?? [], window: input.window ?? { process:"", titlePattern:"", urlPattern:null }, scrollContainer: input.scrollContainer ?? null, verify: input.verify ?? {}, onFail: input.onFail ?? {}, say: input.say ?? "", detail: input.detail ?? null });
       if (Date.now() > command.issuedAt + command.ttlMs) { respond(res, 410, { error:"expired", cmdId:command.cmdId }); return; }
       if (!mqttClient?.connected) { respond(res, 503, { error:"mqtt_unavailable" }); return; }
@@ -47,11 +47,12 @@ const server = createServer(async (req, res) => {
       respond(res, 202, { accepted:true, cmdId:command.cmdId }); return;
     }
     respond(res, 404, { error:"not_found" });
-  } catch (error) { respond(res, 400, { error:error instanceof Error ? error.message : "request_failed" }); }
+  } catch (error) { const unavailable = error instanceof Error && error.message === "storage_unavailable"; respond(res, unavailable ? 503 : 400, { error:unavailable ? "storage_unavailable" : "request_failed" }); }
 });
 
 async function main() {
-  if (mongo) { await mongo.connect(); db = mongo.db(); await Promise.all([db.collection("snapshots").createIndex({ capturedAt:1 }, { expireAfterSeconds: 86400 }), db.collection("steps").createIndex({ sessionId:1, seq:1 }, { unique:true }), db.collection("acks").createIndex({ cmdId:1 }, { unique:true, sparse:true })]); }
+  if (process.env.NODE_ENV === "production" && (!process.env.API_TOKEN || process.env.API_TOKEN.length < 32 || !mongoUri || !mqttUrl?.startsWith("mqtts://"))) throw new Error("Production requires API_TOKEN (32+ chars), MONGODB_URI, and MQTT TLS");
+  if (mongo) { await mongo.connect(); db = mongo.db(); await Promise.all([db.collection("snapshots").createIndex({ _storedAt:1 }, { expireAfterSeconds: 86400 }), db.collection("steps").createIndex({ sessionId:1, seq:1 }, { unique:true }), db.collection("acks").createIndex({ cmdId:1 }, { unique:true, sparse:true })]); }
   server.listen(port, () => console.log(JSON.stringify({ level:"info", message:"http_started", port })));
 }
 main().catch(error => { console.error(error); process.exit(1); });

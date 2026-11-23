@@ -5,6 +5,7 @@ db.createCollection("commands");
 db.createCollection("acks");
 db.steps.createIndex({sessionId:1, seq:1}, {unique:true});
 db.steps.createIndex({"semantics.intent":"text"});
-db.snapshots.createIndex({capturedAt:1}, {expireAfterSeconds:86400});
+db.snapshots.createIndex({_storedAt:1}, {expireAfterSeconds:86400});
 db.acks.createIndex({cmdId:1}, {unique:true, sparse:true});
 print("Lighthouse MongoDB schema ready");
+
