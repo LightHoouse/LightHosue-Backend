@@ -1,6 +1,7 @@
 name: CI and image
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [master]
@@ -37,4 +38,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ghcr.io/lighthoouse/lighthosue-backend:${{ github.sha }}
