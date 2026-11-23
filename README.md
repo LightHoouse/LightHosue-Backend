@@ -1,6 +1,6 @@
 # Lighthouse Backend
 
-Baseline backend for the Lighthouse lab assistant. It validates commands, publishes them to per-student MQTT topics, and exposes `/health` plus `/commands`.
+Gateway backend untuk Lighthouse. Service ini menyimpan step, snapshot yang sudah di-redact, command, dan ack ke MongoDB; memanggil AI service; lalu menerbitkan command guide-only ke MQTT per student.
 
 Run:
 
@@ -10,4 +10,6 @@ npm run check
 npm run dev
 ```
 
-Configure credentials through environment variables. Never commit `.env`.
+Endpoint utama: `GET /health`, `GET /health/detailed`, `POST /steps`, `POST /snapshots`, `POST /answer`, dan `POST /commands`.
+
+Jalankan schema awal dengan `mongosh "$MONGODB_URI" mongo-setup.js`. Configure credentials through environment variables. Never commit `.env`.
