@@ -2,7 +2,7 @@
 
 A lab support API that connects recorded steps, student questions, and desktop guidance.
 
-[Desktop app](https://github.com/LightHoouse/LightHouse-App) · [AI service](https://github.com/LightHoouse/LightHouse-AI) · [Live health](https://lighthouse-api.198.185.150.122.sslip.io/health) · [Organization](https://github.com/LightHoouse)
+[Desktop app](https://github.com/LightHoouse/LightHouse-App) · [AI service](https://github.com/LightHoouse/LightHouse-AI) · [Live health](https://lighthouse-be.yanzz.dev/health) · [Organization](https://github.com/LightHoouse)
 
 ![CI/CD](https://github.com/LightHoouse/LightHosue-Backend/actions/workflows/ci.yml/badge.svg)
 
@@ -76,3 +76,4 @@ Coolify builds the Dockerfile from `master`, listens on port 3000, and checks `/
 GitHub Actions runs tests, publishes a commit-tagged image to GHCR, then triggers Coolify and checks the public endpoint. Set the repository secret `COOLIFY_TOKEN` and variables `COOLIFY_URL`, `COOLIFY_APP_UUID`, and `HEALTH_URL` to enable deployment. Application credentials are configured in Coolify as runtime environment variables, not build arguments.
 
 Windows installers are published by [LightHouse-App](https://github.com/LightHoouse/LightHouse-App/releases); this repository deploys the API service.
+
