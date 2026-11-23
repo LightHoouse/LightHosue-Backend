@@ -92,3 +92,5 @@ GitHub Actions runs tests, publishes a commit-tagged image to GHCR, then trigger
 
 Windows installers are published by [LightHouse-App](https://github.com/LightHoouse/LightHouse-App/releases); this repository deploys the API service.
 
+
+POST /v1/guide accepts stream: true to forward incremental AI answer deltas as NDJSON. Membership, group scope, and the selected recorded step are validated before any text is forwarded. The final result carries only stored target locators.

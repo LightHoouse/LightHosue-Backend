@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from 'mongodb';
 import { z } from 'zod';
+import { readEvents } from './ndjson.js';
 
 const text = z.string().trim().min(1).max(120);
 const target = z.object({ automationId:z.string().max(300), name:z.string().max(300), controlType:z.string().max(80) }).strict();
@@ -32,6 +33,7 @@ export async function groupIndexes(db:Db) {
 export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|undefined,read:()=>Promise<unknown>):Promise<boolean> {
   const url=(req.url || '').split('?')[0]; if(!url.startsWith('/v1/')) return false;
   const send=(status:number,value:unknown)=>{res.statusCode=status;res.setHeader('content-type','application/json');res.end(JSON.stringify(value));};
+  const streamEvent=(event:unknown)=>{if(!res.headersSent){res.setHeader('content-type','application/x-ndjson; charset=utf-8');res.setHeader('cache-control','no-cache, no-transform');res.setHeader('x-accel-buffering','no');res.flushHeaders();}res.write(JSON.stringify(event)+'\n');};
   try {
     if(!db) throw new Error('503:Penyimpanan belum tersedia.');
     const groups=db.collection('groups'), members=db.collection('members'), recordings=db.collection('recordings'), steps=db.collection('recordedSteps');
@@ -85,7 +87,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(req.method==='GET' && match[2]==='steps') {send(200,{steps:await steps.find({recordingId:match[1],groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray()});return true;}
     }
     if(req.method==='POST' && url==='/v1/guide') {
-      const input=z.object({recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
+      const input=z.object({stream:z.boolean().default(false),recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
       if(group.askEnabled===false && member.role==='student')throw new Error('403:Asisten sedang menonaktifkan bantuan untuk sesi ini.');
       const recording=await recordings.findOne({...(input.recordingId?{recordingId:input.recordingId}:{nextSeq:{$gt:0}}),groupId:group.groupId},{sort:{createdAt:-1}});
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
@@ -96,11 +98,23 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(input.question.trim() && process.env.LAB_AI_URL) {
         const rateKey='ai:'+member.memberId,now=Date.now();const limit=attempts.get(rateKey)||{count:0,until:now+60000};if(limit.until<now){limit.count=0;limit.until=now+60000;}limit.count++;attempts.set(rateKey,limit);if(limit.count>12)throw new Error('429:Batas 12 pertanyaan AI per menit. Tunggu sebentar.');
         let response;
-        try{response=await fetch(`${process.env.LAB_AI_URL}/guide`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
+        try{response=await fetch(`${process.env.LAB_AI_URL}/guide${input.stream?'/stream':''}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
         if(!response.ok)throw new Error('503:AI belum tersedia. Coba lagi atau gunakan Langkah berikutnya.');
-        const result=await response.json() as {stepId?:string;explanation?:string};
-        selected=all.find(s=>s.stepId===result.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah yang sesuai dalam rekaman ini.');
-        explanation=typeof result.explanation==='string'?result.explanation.slice(0,600):'';source='ai';
+        if(input.stream){
+          let finished=false;selected=undefined;
+          for await(const event of readEvents(response)){
+            if(event.type==='selection'){if(selected)throw new Error('503:Seleksi AI tidak valid.');selected=all.find(s=>s.stepId===event.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah dalam rekaman ini.');}
+            else if(event.type==='delta'){if(!selected||typeof event.text!=='string'||explanation.length+event.text.length>4000)throw new Error('503:Stream AI tidak valid.');explanation+=event.text;streamEvent({type:'delta',text:event.text});}
+            else if(event.type==='done'){finished=true;}
+            else if(event.type==='error')throw new Error('503:AI terputus atau tidak menemukan langkah yang sesuai. Coba lagi.');
+          }
+          if(!finished||!selected||!explanation)throw new Error('503:Jawaban AI terputus. Coba lagi.');
+        }else{
+          const result=await response.json() as {stepId?:string;explanation?:string};
+          selected=all.find(s=>s.stepId===result.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah yang sesuai dalam rekaman ini.');
+          explanation=typeof result.explanation==='string'?result.explanation.slice(0,600):'';
+        }
+        source='ai';
       } else if(input.question.trim()) {
         const words=input.question.toLowerCase().split(/\W+/).filter(w=>w.length>2);
         const ranked=all.map(s=>({step:s,score:words.filter(w=>`${s.target.name} ${s.target.automationId} ${s.event}`.toLowerCase().includes(w)).length})).sort((a,b)=>b.score-a.score);
@@ -109,7 +123,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       }
       if(!selected){send(200,{done:true});return true;}
       const verbs:Record<string,string>={click:'Klik',doubleClick:'Klik dua kali',rightClick:'Klik kanan',scroll:'Scroll',type:'Isi dengan nilai milikmu pada'};
-      send(200,{cmdId:randomUUID(),source,explanation,mode:'guide',step:selected,say:`${verbs[selected.event]} ${selected.target.name || selected.target.automationId || selected.target.controlType}${selected.event==='scroll' ? ' '+(selected.direction==='up'?'ke atas':'ke bawah'):''}.`,total:all.length});return true;
+      const command={cmdId:randomUUID(),source,explanation,mode:'guide',step:selected,say:`${verbs[selected.event]} ${selected.target.name || selected.target.automationId || selected.target.controlType}${selected.event==='scroll' ? ' '+(selected.direction==='up'?'ke atas':'ke bawah'):''}.`,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;
     }
     if(req.method==='POST' && url==='/v1/ack') {
       const input=z.object({cmdId:z.string().uuid(),stepId:z.string().uuid(),resolved:z.boolean(),strategy:z.string().max(80).nullable()}).parse(await read());
@@ -119,6 +133,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
     throw new Error('404:Endpoint tidak ditemukan.');
   } catch(error) {
     const message=error instanceof Error?error.message:'';const match=message.match(/^(\d{3}):(.*)$/);
+    if(res.headersSent){streamEvent({type:'error',message:match?match[2]:'Jawaban terputus. Coba lagi.'});res.end();return true;}
     send(match?Number(match[1]):400,{error:match?match[2]:'Data tidak valid. Periksa isian dan coba lagi.'});return true;
   }
 }

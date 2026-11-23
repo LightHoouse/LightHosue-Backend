@@ -27,6 +27,25 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   assert.equal((await call('/v1/guide',{recordingId:r.data.recordingId},b.data.token)).status,404);
   const guide=await call('/v1/guide',{recordingId:r.data.recordingId,question:'Simpan'},s.data.token);assert.equal(guide.status,200);assert.equal(guide.data.step.target.automationId,'save');assert.equal(guide.data.total,1);
   assert.equal((await call('/v1/guide',{question:'Simpan'},s.data.token)).status,200);
+  let releaseStream=()=>{}, streamMode='success';
+  const ai=createServer(async(req,res)=>{
+    for await(const _ of req){};
+    res.setHeader('content-type','application/x-ndjson');
+    res.write(JSON.stringify({type:'selection',stepId:streamMode==='foreign'?randomUUID():guide.data.step.stepId})+'\n');
+    res.write(JSON.stringify({type:'delta',text:'Klik tombol '})+'\n');
+    if(streamMode==='success'){await new Promise<void>(resolve=>{releaseStream=resolve;});res.end(JSON.stringify({type:'delta',text:'Simpan.'})+'\n'+JSON.stringify({type:'done'})+'\n');}
+    else res.end(JSON.stringify({type:'error',message:'private provider detail'})+'\n');
+  });
+  await new Promise<void>(resolve=>ai.listen(0,'127.0.0.1',resolve));
+  const aiAddress=ai.address();assert.ok(aiAddress&&typeof aiAddress!=='string');const previousAI=process.env.LAB_AI_URL;process.env.LAB_AI_URL=`http://127.0.0.1:${aiAddress.port}`;
+  const streamRequest=()=>fetch(base+'/v1/guide',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${s.data.token}`},body:JSON.stringify({question:'Simpan',stream:true})});
+  try{
+    const streamed=await streamRequest();assert.equal(streamed.status,200);const reader=streamed.body!.getReader();
+    const first=await reader.read();const initial=new TextDecoder().decode(first.value);assert.match(initial,/"type":"delta"/);assert.doesNotMatch(initial,/"type":"result"/);releaseStream();
+    let rest='';while(true){const chunk=await reader.read();if(chunk.done)break;rest+=new TextDecoder().decode(chunk.value);}assert.match(rest,/"type":"result"/);assert.match(rest,/Simpan/);
+    streamMode='broken';const broken=await streamRequest();const interrupted=await broken.text();assert.match(interrupted,/"type":"error"/);assert.doesNotMatch(interrupted,/private provider detail|"type":"result"/);
+    streamMode='foreign';const foreign=await streamRequest();assert.equal(foreign.status,404);assert.doesNotMatch(await foreign.text(),/"type":"delta"/);
+  }finally{releaseStream();if(previousAI===undefined)delete process.env.LAB_AI_URL;else process.env.LAB_AI_URL=previousAI;await new Promise<void>(resolve=>ai.close(()=>resolve()));}
   assert.equal((await call('/v1/group/settings',{askEnabled:false},s.data.token)).status,403);
   await call('/v1/group/settings',{askEnabled:false},a.data.token);
   assert.equal((await call('/v1/guide',{question:'Simpan'},s.data.token)).status,403);
