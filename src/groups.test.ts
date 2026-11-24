@@ -13,7 +13,7 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
  async function call(route:string,body?:unknown,token?:string){const r=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json() as any};}
  try {
   const a=await call('/v1/groups',{name:'Assistant',groupName:'A'});assert.equal(a.status,201);
-  const s=await call('/v1/join',{name:'Student',code:a.data.group.code});assert.equal(s.data.role,'student');
+  const s=await call('/v1/join',{name:'Student',code:a.data.group.code,device:{deviceId:randomUUID(),localIps:['192.168.1.12']}});assert.equal(s.data.role,'student');
   const b=await call('/v1/groups',{name:'Other',groupName:'B'});
   assert.equal((await call('/v1/group')).status,401);
   assert.equal((await call('/v1/recordings',{name:'Bad',process:'fixture'},s.data.token)).status,403);
@@ -30,6 +30,7 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   assert.equal((await call('/v1/activity',undefined,s.data.token)).status,403);
   assert.equal((await call('/v1/activity',undefined,b.data.token)).data.questions.length,0);
   const activity=await call('/v1/activity',undefined,a.data.token);assert.ok(activity.data.questions.some((q:any)=>q.question==='Simpan'&&q.name==='Student'));
+  const roster=await call('/v1/group',undefined,a.data.token);assert.deepEqual(roster.data.members.find((m:any)=>m.role==='student').device.localIps,['192.168.1.12']);const studentRoster=await call('/v1/group',undefined,s.data.token);assert.equal(studentRoster.data.members.find((m:any)=>m.role==='student').device,undefined);
 
   let releaseStream=()=>{}, streamMode='success';
   const ai=createServer(async(req,res)=>{
