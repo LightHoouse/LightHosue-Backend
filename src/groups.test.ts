@@ -36,9 +36,10 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   const ai=createServer(async(req,res)=>{
     for await(const _ of req){};
     res.setHeader('content-type','application/x-ndjson');
-    res.write(JSON.stringify({type:'selection',stepId:streamMode==='foreign'?randomUUID():guide.data.step.stepId})+'\n');
+    res.write(JSON.stringify({type:'selection',stepId:streamMode==='foreign'?randomUUID():streamMode==='explain'?null:guide.data.step.stepId,...(streamMode==='explain'?{mode:'explain'}:{})})+'\n');
     res.write(JSON.stringify({type:'delta',text:'Klik tombol '})+'\n');
-    if(streamMode==='success'){await new Promise<void>(resolve=>{releaseStream=resolve;});res.end(JSON.stringify({type:'delta',text:'Simpan.'})+'\n'+JSON.stringify({type:'done'})+'\n');}
+    if(streamMode==='explain'){res.end(JSON.stringify({type:'done'})+'\n');}
+    else if(streamMode==='success'){await new Promise<void>(resolve=>{releaseStream=resolve;});res.end(JSON.stringify({type:'delta',text:'Simpan.'})+'\n'+JSON.stringify({type:'done'})+'\n');}
     else res.end(JSON.stringify({type:'error',message:'private provider detail'})+'\n');
   });
   await new Promise<void>(resolve=>ai.listen(0,'127.0.0.1',resolve));
@@ -48,6 +49,7 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
     const streamed=await streamRequest();assert.equal(streamed.status,200);const reader=streamed.body!.getReader();
     const first=await reader.read();const initial=new TextDecoder().decode(first.value);assert.match(initial,/"type":"delta"/);assert.doesNotMatch(initial,/"type":"result"/);releaseStream();
     let rest='';while(true){const chunk=await reader.read();if(chunk.done)break;rest+=new TextDecoder().decode(chunk.value);}assert.match(rest,/"type":"result"/);assert.match(rest,/Simpan/);
+    streamMode='explain';const explanationResponse=await streamRequest();const explanationEvents=(await explanationResponse.text()).trim().split('\n').map(line=>JSON.parse(line));const explained=explanationEvents.find(e=>e.type==='result').command;assert.equal(explained.answerMode,'explain');assert.equal(explained.step,undefined);
     streamMode='broken';const broken=await streamRequest();const interrupted=await broken.text();assert.match(interrupted,/"type":"error"/);assert.doesNotMatch(interrupted,/private provider detail|"type":"result"/);
     streamMode='foreign';const foreign=await streamRequest();assert.equal(foreign.status,404);assert.doesNotMatch(await foreign.text(),/"type":"delta"/);
   }finally{releaseStream();if(previousAI===undefined)delete process.env.LAB_AI_URL;else process.env.LAB_AI_URL=previousAI;await new Promise<void>(resolve=>ai.close(()=>resolve()));}

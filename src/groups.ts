@@ -107,7 +107,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(req.method==='GET' && match[2]==='steps') {send(200,{steps:await steps.find({recordingId:match[1],groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray()});return true;}
     }
     if(req.method==='POST' && url==='/v1/guide') {
-      const input=z.object({stream:z.boolean().default(false),recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
+      const input=z.object({history:z.array(z.object({role:z.enum(['user','assistant']),content:z.string().max(4000)}).strict()).max(8).default([]),currentStepId:z.string().uuid().optional(),stream:z.boolean().default(false),recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
       if(group.askEnabled===false && member.role==='student')throw new Error('403:Asisten sedang menonaktifkan bantuan untuk sesi ini.');
       if(input.question.trim())await db.collection('questions').insertOne({questionId:randomUUID(),groupId:group.groupId,memberId:member.memberId,name:member.name,device:member.device||null,peerIp:member.peerIp||null,question:input.question,at:Date.now(),expiresAt:group.expiresAt});
       const recording=await recordings.findOne({...(input.recordingId?{recordingId:input.recordingId}:{nextSeq:{$gt:0}}),groupId:group.groupId},{sort:{createdAt:-1}});
@@ -115,21 +115,21 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       const all=await steps.find({recordingId:recording.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
       if(!all.length)throw new Error('409:Belum ada langkah yang direkam.');
       let selected=all.find(s=>s.seq>input.afterSeq);
-      let explanation='',source='recording';
+      let explanation='',source='recording',answerMode='guide';
       if(input.question.trim() && process.env.LAB_AI_URL) {
         const rateKey='ai:'+member.memberId,now=Date.now();const limit=attempts.get(rateKey)||{count:0,until:now+60000};if(limit.until<now){limit.count=0;limit.until=now+60000;}limit.count++;attempts.set(rateKey,limit);if(limit.count>12)throw new Error('429:Batas 12 pertanyaan AI per menit. Tunggu sebentar.');
         let response;
-        try{response=await fetch(`${process.env.LAB_AI_URL}/guide${input.stream?'/stream':''}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,key:s.key||null,modifiers:s.modifiers||[]}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
+        try{response=await fetch(`${process.env.LAB_AI_URL}/guide${input.stream?'/stream':''}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,history:input.history,currentStepId:input.currentStepId&&all.some(s=>s.stepId===input.currentStepId)?input.currentStepId:undefined,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,key:s.key||null,modifiers:s.modifiers||[]}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
         if(!response.ok)throw new Error('503:AI belum tersedia. Coba lagi atau gunakan Langkah berikutnya.');
         if(input.stream){
-          let finished=false;selected=undefined;
+          let finished=false,selectionReceived=false;selected=undefined;
           for await(const event of readEvents(response)){
-            if(event.type==='selection'){if(selected)throw new Error('503:Seleksi AI tidak valid.');selected=all.find(s=>s.stepId===event.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah dalam rekaman ini.');}
-            else if(event.type==='delta'){if(!selected||typeof event.text!=='string'||explanation.length+event.text.length>4000)throw new Error('503:Stream AI tidak valid.');explanation+=event.text;streamEvent({type:'delta',text:event.text});}
+            if(event.type==='selection'){if(selectionReceived)throw new Error('503:Seleksi AI tidak valid.');selectionReceived=true;answerMode=typeof event.mode==='string'?event.mode:'guide';if(!['guide','explain','clarify'].includes(answerMode))throw new Error('503:Mode jawaban tidak valid.');selected=all.find(s=>s.stepId===event.stepId);if((event.stepId!=null&&!selected)||(answerMode==='guide'&&!selected))throw new Error('404:AI tidak menemukan langkah dalam rekaman ini.');}
+            else if(event.type==='delta'){if(!selectionReceived||typeof event.text!=='string'||explanation.length+event.text.length>4000)throw new Error('503:Stream AI tidak valid.');explanation+=event.text;streamEvent({type:'delta',text:event.text});}
             else if(event.type==='done'){finished=true;}
             else if(event.type==='error')throw new Error('503:AI terputus atau tidak menemukan langkah yang sesuai. Coba lagi.');
           }
-          if(!finished||!selected||!explanation)throw new Error('503:Jawaban AI terputus. Coba lagi.');
+          if(!finished||!selectionReceived||!explanation)throw new Error('503:Jawaban AI terputus. Coba lagi.');
         }else{
           const result=await response.json() as {stepId?:string;explanation?:string};
           selected=all.find(s=>s.stepId===result.stepId);if(!selected)throw new Error('404:AI tidak menemukan langkah yang sesuai dalam rekaman ini.');
@@ -142,6 +142,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
         if(!ranked[0]?.score)throw new Error('404:Tidak ada langkah yang cocok. Coba nama tombol atau gunakan Langkah berikutnya.');
         selected=ranked[0].step;
       }
+      if(answerMode!=='guide'){const command={cmdId:randomUUID(),source,answerMode,explanation,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;}
       if(!selected){send(200,{done:true});return true;}
       const verbs:Record<string,string>={click:'Klik',doubleClick:'Klik dua kali',rightClick:'Klik kanan',scroll:'Scroll',dragDrop:'Drag pada',keypress:'Gunakan shortcut pada',type:'Isi dengan nilai milikmu pada'};
       const command={cmdId:randomUUID(),source,explanation,mode:'guide',step:selected,say:`${verbs[selected.event]} ${selected.target.name || selected.target.automationId || selected.target.controlType}${selected.event==='scroll' ? ' '+(selected.direction==='up'?'ke atas':'ke bawah'):''}.`,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;
