@@ -109,7 +109,8 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
     if(req.method==='POST' && url==='/v1/guide') {
       const input=z.object({history:z.array(z.object({role:z.enum(['user','assistant']),content:z.string().max(4000)}).strict()).max(8).default([]),currentStepId:z.string().uuid().optional(),stream:z.boolean().default(false),recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
       if(group.askEnabled===false && member.role==='student')throw new Error('403:Asisten sedang menonaktifkan bantuan untuk sesi ini.');
-      if(input.question.trim())await db.collection('questions').insertOne({questionId:randomUUID(),groupId:group.groupId,memberId:member.memberId,name:member.name,device:member.device||null,peerIp:member.peerIp||null,question:input.question,at:Date.now(),expiresAt:group.expiresAt});
+      const questionId=input.question.trim()?randomUUID():undefined;
+      if(questionId)await db.collection('questions').insertOne({questionId,groupId:group.groupId,memberId:member.memberId,name:member.name,device:member.device||null,peerIp:member.peerIp||null,question:input.question,at:Date.now(),expiresAt:group.expiresAt});
       const recording=await recordings.findOne({...(input.recordingId?{recordingId:input.recordingId}:{nextSeq:{$gt:0}}),groupId:group.groupId},{sort:{createdAt:-1}});
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
       const all=await steps.find({recordingId:recording.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
@@ -142,6 +143,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
         if(!ranked[0]?.score)throw new Error('404:Tidak ada langkah yang cocok. Coba nama tombol atau gunakan Langkah berikutnya.');
         selected=ranked[0].step;
       }
+      if(questionId)await db.collection('questions').updateOne({questionId,groupId:group.groupId},{$set:{answer:explanation||null,source,answerMode,stepId:selected?.stepId||null,answeredAt:Date.now()}});
       if(answerMode!=='guide'){const command={cmdId:randomUUID(),source,answerMode,explanation,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;}
       if(!selected){send(200,{done:true});return true;}
       const verbs:Record<string,string>={click:'Klik',doubleClick:'Klik dua kali',rightClick:'Klik kanan',scroll:'Scroll',dragDrop:'Drag pada',keypress:'Gunakan shortcut pada',type:'Isi dengan nilai milikmu pada'};
