@@ -27,6 +27,10 @@ test('real Mongo group ownership, recording, guidance isolation and closure',asy
   assert.equal((await call('/v1/guide',{recordingId:r.data.recordingId},b.data.token)).status,404);
   const guide=await call('/v1/guide',{recordingId:r.data.recordingId,question:'Simpan'},s.data.token);assert.equal(guide.status,200);assert.equal(guide.data.step.target.automationId,'save');assert.equal(guide.data.total,1);
   assert.equal((await call('/v1/guide',{question:'Simpan'},s.data.token)).status,200);
+  assert.equal((await call('/v1/activity',undefined,s.data.token)).status,403);
+  assert.equal((await call('/v1/activity',undefined,b.data.token)).data.questions.length,0);
+  const activity=await call('/v1/activity',undefined,a.data.token);assert.ok(activity.data.questions.some((q:any)=>q.question==='Simpan'&&q.name==='Student'));
+
   let releaseStream=()=>{}, streamMode='success';
   const ai=createServer(async(req,res)=>{
     for await(const _ of req){};

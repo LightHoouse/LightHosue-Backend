@@ -11,11 +11,13 @@ const observedElement=z.object({automationId:z.string().max(300),role:z.string()
 const observedState=z.object({windowTitle:z.string().max(512),visibleNames:z.array(z.string().max(300)).max(100),elements:z.array(observedElement).max(100),observedAt:z.number().finite()}).strict();
 const captureSchema=z.object({surface:z.literal('uia'),preState:observedState.nullable(),postState:observedState.nullable(),details:z.object({className:z.string().max(300),ancestors:z.array(z.object({role:z.string().max(80),name:z.string().max(300)}).strict()).max(5),supportedPatterns:z.array(z.string().max(120)).max(50),enabled:z.boolean(),bboxNorm:z.array(z.number().finite()).length(4),appVersion:z.string().max(120)}).strict(),env:z.object({os:z.string().max(300),dpi:z.number().positive().nullable(),resolution:z.array(z.number().int()).length(2),monitorCount:z.number().int().positive(),locale:z.string().max(80)}).strict()}).strict();
 const stepSchema = z.object({
-  eventId:z.string().uuid(), event:z.enum(['click','doubleClick','rightClick','scroll','type']),
+  eventId:z.string().uuid(), event:z.enum(['click','doubleClick','rightClick','scroll','type','dragDrop']),
   target, window:z.object({process:text,title:z.string().max(300)}).strict(),
+  scrollDelta:z.tuple([z.number().int().min(-12000).max(12000),z.number().int().min(-12000).max(12000)]).optional(),
+  motion:z.object({start:z.tuple([z.number().min(0).max(1),z.number().min(0).max(1)]),end:z.tuple([z.number().min(0).max(1),z.number().min(0).max(1)])}).strict().optional(),
   capture:captureSchema.optional(), enrichment:z.boolean().default(false),
   timestamp:z.number().finite(), direction:z.enum(['up','down']).optional(),
-}).strict();
+}).strict().refine(s=>s.event!=='dragDrop'||!!s.motion,{message:'Drag requires relative start and end'}).refine(s=>s.event!=='scroll'||!!s.direction,{message:'Scroll requires direction'});
 const hash = (s:string) => createHash('sha256').update(s).digest('hex');
 const expires = () => new Date(Date.now()+7*86400000);
 const attempts = new Map<string,{count:number,until:number}>();
@@ -32,7 +34,7 @@ export async function groupIndexes(db:Db) {
     db.collection('members').createIndex({tokenHash:1},{unique:true}),
     db.collection('recordedSteps').createIndex({recordingId:1,eventId:1},{unique:true}),
     db.collection('recordedSteps').createIndex({recordingId:1,seq:1},{unique:true}),
-    ...['groups','members','recordings','recordedSteps','guideAcks'].map(c=>db.collection(c).createIndex({expiresAt:1},{expireAfterSeconds:0})),
+    ...['groups','members','recordings','recordedSteps','guideAcks','questions'].map(c=>db.collection(c).createIndex({expiresAt:1},{expireAfterSeconds:0})),
   ]);
 }
 export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|undefined,read:()=>Promise<unknown>):Promise<boolean> {
@@ -65,6 +67,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
         members:await members.find({groupId:group.groupId,expiresAt:{$gt:new Date()}},{projection:{_id:0,name:1,role:1,memberId:1}}).toArray(),
         recordings:await recordings.find({groupId:group.groupId},{projection:{_id:0}}).sort({createdAt:-1}).limit(50).toArray()}); return true;
     }
+    if(req.method==='GET' && url==='/v1/activity') {owner();send(200,{questions:await db.collection('questions').find({groupId:group.groupId},{projection:{_id:0,groupId:0,expiresAt:0}}).sort({at:-1}).limit(200).toArray()});return true;}
     if(req.method==='POST' && url==='/v1/group/close') {owner();await groups.updateOne({groupId:group.groupId},{$set:{active:false}});send(200,{ok:true});return true;}
     if(req.method==='POST' && url==='/v1/group/settings') {owner();const input=z.object({askEnabled:z.boolean()}).parse(await read());await groups.updateOne({groupId:group.groupId},{$set:input});send(200,input);return true;}
     if(req.method==='POST' && url==='/v1/leave') {await members.deleteOne({memberId:member.memberId});send(200,{ok:true});return true;}
@@ -103,6 +106,7 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
     if(req.method==='POST' && url==='/v1/guide') {
       const input=z.object({stream:z.boolean().default(false),recordingId:z.string().uuid().optional(),question:z.string().max(1000).default(''),afterSeq:z.number().int().min(0).default(0),visibleNames:z.array(z.string().max(300)).max(100).default([]),activeProcess:z.string().max(120).default('')}).parse(await read());
       if(group.askEnabled===false && member.role==='student')throw new Error('403:Asisten sedang menonaktifkan bantuan untuk sesi ini.');
+      if(input.question.trim())await db.collection('questions').insertOne({questionId:randomUUID(),groupId:group.groupId,memberId:member.memberId,name:member.name,question:input.question,at:Date.now(),expiresAt:group.expiresAt});
       const recording=await recordings.findOne({...(input.recordingId?{recordingId:input.recordingId}:{nextSeq:{$gt:0}}),groupId:group.groupId},{sort:{createdAt:-1}});
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
       const all=await steps.find({recordingId:recording.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
@@ -136,11 +140,11 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
         selected=ranked[0].step;
       }
       if(!selected){send(200,{done:true});return true;}
-      const verbs:Record<string,string>={click:'Klik',doubleClick:'Klik dua kali',rightClick:'Klik kanan',scroll:'Scroll',type:'Isi dengan nilai milikmu pada'};
+      const verbs:Record<string,string>={click:'Klik',doubleClick:'Klik dua kali',rightClick:'Klik kanan',scroll:'Scroll',dragDrop:'Drag pada',type:'Isi dengan nilai milikmu pada'};
       const command={cmdId:randomUUID(),source,explanation,mode:'guide',step:selected,say:`${verbs[selected.event]} ${selected.target.name || selected.target.automationId || selected.target.controlType}${selected.event==='scroll' ? ' '+(selected.direction==='up'?'ke atas':'ke bawah'):''}.`,total:all.length};if(input.stream){streamEvent({type:'result',command});res.end();}else send(200,command);return true;
     }
     if(req.method==='POST' && url==='/v1/ack') {
-      const input=z.object({cmdId:z.string().uuid(),stepId:z.string().uuid(),resolved:z.boolean(),strategy:z.string().max(80).nullable(),interaction:z.literal('target-clicked').optional(),outcome:z.enum(['observed','not-observed','unverifiable']).optional()}).parse(await read());
+      const input=z.object({cmdId:z.string().uuid(),stepId:z.string().uuid(),resolved:z.boolean(),strategy:z.string().max(80).nullable(),interaction:z.enum(['target-clicked','gesture-completed']).optional(),outcome:z.enum(['observed','not-observed','unverifiable']).optional()}).parse(await read());
       if(!await steps.findOne({stepId:input.stepId,groupId:group.groupId}))throw new Error('404:Langkah tidak ditemukan.');
       await db.collection('guideAcks').insertOne({...input,groupId:group.groupId,memberId:member.memberId,expiresAt:group.expiresAt,at:Date.now()});send(200,{ok:true});return true;
     }
