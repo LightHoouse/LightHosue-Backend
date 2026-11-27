@@ -40,6 +40,25 @@ export async function groupIndexes(db:Db) {
     ...['groups','members','recordings','recordedSteps','guideAcks','questions'].map(c=>db.collection(c).createIndex({expiresAt:1},{expireAfterSeconds:0})),
   ]);
 }
+function summarizeStepForAI(s:any){
+  const pre=s.capture?.preState, post=s.capture?.postState;
+  const preEls:any[]=Array.isArray(pre?.elements)?pre.elements:[];
+  const postEls:any[]=Array.isArray(post?.elements)?post.elements:[];
+  const activeSet=new Set<string>();
+  for(const el of (postEls.length?postEls:preEls)){
+    if((el?.checkedValue===true||el?.selected===true)&&typeof el?.name==='string'&&el.name.trim()&&el.name.trim().length<=80)activeSet.add(el.name.trim());
+  }
+  const preActive=new Set(preEls.filter(el=>(el?.checkedValue===true||el?.selected===true)&&typeof el?.name==='string').map(el=>el.name.trim()));
+  const changes:string[]=[];
+  for(const name of activeSet){if(!preActive.has(name)&&changes.length<6)changes.push(`activated: ${name}`);}
+  const preNames=new Set((Array.isArray(pre?.visibleNames)?pre.visibleNames:[]).filter((n:unknown)=>typeof n==='string'));
+  const postNames=(Array.isArray(post?.visibleNames)?post.visibleNames:[]).filter((n:unknown)=>typeof n==='string');
+  for(const name of postNames){
+    const clean=name.trim();
+    if(clean&&clean.length<=100&&!preNames.has(name)&&changes.length<12)changes.push(`appeared: ${clean}`);
+  }
+  return {stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,windowTitle:typeof s.window.title==='string'?s.window.title.slice(0,300):'',key:s.key||null,modifiers:s.modifiers||[],activeTools:[...activeSet].slice(0,8),stateChanges:changes.slice(0,12)};
+}
 export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|undefined,read:()=>Promise<unknown>):Promise<boolean> {
   const url=(req.url || '').split('?')[0]; if(!url.startsWith('/v1/')) return false;
   const send=(status:number,value:unknown)=>{res.statusCode=status;res.setHeader('content-type','application/json');res.end(JSON.stringify(value));};
@@ -115,12 +134,13 @@ export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|un
       if(!recording) throw new Error('404:Rekaman tidak ditemukan dalam group ini.');
       const all=await steps.find({recordingId:recording.recordingId,groupId:group.groupId},{projection:{_id:0}}).sort({seq:1,timestamp:1}).toArray();
       if(!all.length)throw new Error('409:Belum ada langkah yang direkam.');
-      let selected=all.find(s=>s.seq>input.afterSeq);
+      const leadingScrolls=input.afterSeq===0?all.findIndex(s=>s.event!=='scroll'):-1;
+      let selected=leadingScrolls>=3?all[leadingScrolls]:all.find(s=>s.seq>input.afterSeq);
       let explanation='',source='recording',answerMode='guide';
       if(input.question.trim() && process.env.LAB_AI_URL) {
         const rateKey='ai:'+member.memberId,now=Date.now();const limit=attempts.get(rateKey)||{count:0,until:now+60000};if(limit.until<now){limit.count=0;limit.until=now+60000;}limit.count++;attempts.set(rateKey,limit);if(limit.count>12)throw new Error('429:Batas 12 pertanyaan AI per menit. Tunggu sebentar.');
         let response;
-        try{response=await fetch(`${process.env.LAB_AI_URL}/guide${input.stream?'/stream':''}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,history:input.history,currentStepId:input.currentStepId&&all.some(s=>s.stepId===input.currentStepId)?input.currentStepId:undefined,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(s=>({stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,key:s.key||null,modifiers:s.modifiers||[]}))}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
+        try{response=await fetch(`${process.env.LAB_AI_URL}/guide${input.stream?'/stream':''}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${process.env.LAB_AI_TOKEN || ''}`},body:JSON.stringify({question:input.question,history:input.history,currentStepId:input.currentStepId&&all.some(s=>s.stepId===input.currentStepId)?input.currentStepId:undefined,visibleNames:input.visibleNames,activeProcess:input.activeProcess,steps:all.map(summarizeStepForAI)}),signal:AbortSignal.timeout(60000)});}catch{throw new Error('503:AI belum dapat dihubungi. Coba lagi sebentar.');}
         if(!response.ok)throw new Error('503:AI belum tersedia. Coba lagi atau gunakan Langkah berikutnya.');
         if(input.stream){
           let finished=false,selectionReceived=false;selected=undefined;
