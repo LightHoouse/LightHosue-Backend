@@ -40,6 +40,15 @@ export async function groupIndexes(db:Db) {
     ...['groups','members','recordings','recordedSteps','guideAcks','questions'].map(c=>db.collection(c).createIndex({expiresAt:1},{expireAfterSeconds:0})),
   ]);
 }
+function describeMotion(m:any){
+  if(!m||!Array.isArray(m.start)||!Array.isArray(m.end))return '';
+  const pct=(v:number)=>Math.max(0,Math.min(100,Math.round(v*100)));
+  const zone=(x:number,y:number)=>`${y<0.33?'atas':y>0.66?'bawah':'tengah'}-${x<0.33?'kiri':x>0.66?'kanan':'tengah'}`;
+  const sx=Number(m.start[0]),sy=Number(m.start[1]),ex=Number(m.end[0]),ey=Number(m.end[1]);
+  if(![sx,sy,ex,ey].every(Number.isFinite))return '';
+  const pts=Array.isArray(m.points)?m.points.length:2;
+  return `drag dari ${zone(sx,sy)} (${pct(sx)}%,${pct(sy)}%) ke ${zone(ex,ey)} (${pct(ex)}%,${pct(ey)}%), ${pts} titik`;
+}
 function summarizeStepForAI(s:any){
   const pre=s.capture?.preState, post=s.capture?.postState;
   const preEls:any[]=Array.isArray(pre?.elements)?pre.elements:[];
@@ -57,7 +66,7 @@ function summarizeStepForAI(s:any){
     const clean=name.trim();
     if(clean&&clean.length<=100&&!preNames.has(name)&&changes.length<12)changes.push(`appeared: ${clean}`);
   }
-  return {stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,windowTitle:typeof s.window.title==='string'?s.window.title.slice(0,300):'',key:s.key||null,modifiers:s.modifiers||[],activeTools:[...activeSet].slice(0,8),stateChanges:changes.slice(0,12)};
+  return {stepId:s.stepId,seq:s.seq,event:s.event,target:s.target,process:s.window.process,windowTitle:typeof s.window.title==='string'?s.window.title.slice(0,300):'',key:s.key||null,modifiers:s.modifiers||[],activeTools:[...activeSet].slice(0,8),stateChanges:changes.slice(0,12),motionSummary:describeMotion(s.motion)};
 }
 export async function groupRoute(req:IncomingMessage,res:ServerResponse,db:Db|undefined,read:()=>Promise<unknown>):Promise<boolean> {
   const url=(req.url || '').split('?')[0]; if(!url.startsWith('/v1/')) return false;
