@@ -11,7 +11,7 @@ A lab support API that connects recorded steps, student questions, and desktop g
 - MongoDB persistence for recorded steps, snapshots, commands, and acknowledgments.
 - A guide-only MQTT gateway with TLS verification and per-student topics.
 - Create/join groups with expiring member tokens; only the assistant can record or close a group.
-- Scoped live recordings, AI step selection, and student resolution acknowledgments.
+- Scoped live recordings from Windows UI Automation (`uia`) and macOS Accessibility (`ax`), AI step selection, and student resolution acknowledgments.
 - Container builds and automatic Coolify deployment after verification.
 
 The desktop group flow uses HTTPS and member tokens; no service credentials are embedded in installers. AI receives only steps from the authenticated member's selected recording. The legacy MQTT gateway remains available for service integrations.
